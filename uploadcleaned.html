@@ -6,13 +6,16 @@
   <title>Upload Cleaned Image | TrashTrek</title>
   <link rel="stylesheet" href="uploadcleaned.css" />
   <style>
+    html, body {
+      height: 100%;
+      margin: 0; padding: 0;
+    }
     #map {
       height: 300px;
       width: 100%;
       margin-top: 20px;
       border: 1px solid #ccc;
       border-radius: 8px;
-      display: none;
     }
     .error-message {
       color: red;
@@ -25,6 +28,11 @@
       display: none;
     }
   </style>
+
+  <!-- Google Maps API with callback to initMap --> 
+  <script async defer
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyDFvPNF4PasSrXDvaJ7vPvnja8foVuIaew&callback=initMap">
+  </script>
 
   <!-- Resemble.js for image comparison -->
   <script src="https://cdn.jsdelivr.net/npm/resemblejs"></script>
@@ -54,40 +62,82 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
-    let matchedDocId = null;      // Firestore document ID of uncleaned image
-    let uncleanedImageBase64 = null; // Base64 string of uncleaned image for comparison
+    let matchedDocId = null;
+    let uncleanedImageBase64 = null;
 
-    // Fetch uncleaned image data by location from Firestore
+    // Global location string to be used in initMap
+    window.locationToShow = null;
+    window.map = null;
+    window.marker = null;
+
+    // Initialize Google Map, called automatically by API after load
+    window.initMap = function () {
+      if (!window.locationToShow) {
+        console.error("No location to show on map");
+        return;
+      }
+
+      const mapElement = document.getElementById("map");
+      const geocoder = new google.maps.Geocoder();
+
+      // If location string looks like lat,lng numbers, parse as coordinates
+      if (window.locationToShow.includes(",")) {
+        const parts = window.locationToShow.split(",");
+        const lat = parseFloat(parts[0].trim());
+        const lng = parseFloat(parts[1].trim());
+        if (!isNaN(lat) && !isNaN(lng)) {
+          const latLng = { lat, lng };
+          window.map = new google.maps.Map(mapElement, {
+            zoom: 16,
+            center: latLng,
+          });
+          window.marker = new google.maps.Marker({
+            position: latLng,
+            map: window.map,
+          });
+          return;
+        }
+      }
+
+      // Else treat as an address string
+      geocoder.geocode({ address: window.locationToShow }, (results, status) => {
+        if (status === "OK" && results[0]) {
+          window.map = new google.maps.Map(mapElement, {
+            zoom: 16,
+            center: results[0].geometry.location,
+          });
+          window.marker = new google.maps.Marker({
+            position: results[0].geometry.location,
+            map: window.map,
+          });
+        } else {
+          console.error("Geocode failed: " + status);
+        }
+      });
+    };
+
+    // Fetch uncleaned image from Firestore by location
     async function fetchUncleanedImage(location) {
       const imagesRef = collection(db, "images");
       const q = query(imagesRef, where("location", "==", location));
       const querySnapshot = await getDocs(q);
-      if (querySnapshot.empty) {
-        return null;
-      }
+      if (querySnapshot.empty) return null;
       const docSnap = querySnapshot.docs[0];
       matchedDocId = docSnap.id;
       return docSnap.data();
     }
 
-    // Convert image URL to base64 string (for Resemble.js)
+    // Convert image URL to base64 string for Resemble.js
     async function getBase64FromUrl(url) {
-      try {
-        const response = await fetch(url);
-        const blob = await response.blob();
-        return await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      } catch (e) {
-        console.error("Failed to fetch or convert uncleaned image URL to base64:", e);
-        return null;
-      }
+      const response = await fetch(url);
+      const blob = await response.blob();
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
+      });
     }
 
-    // Resize image base64 to max 500x500 for faster comparison
     function resizeBase64Image(base64Str, maxWidth = 500, maxHeight = 500) {
       return new Promise((resolve) => {
         const img = new Image();
@@ -109,15 +159,10 @@
           ctx.drawImage(img, 0, 0, width, height);
           resolve(canvas.toDataURL());
         };
-        img.onerror = () => {
-          console.error("Failed to load base64 image for resizing");
-          resolve(base64Str); // fallback
-        }
         img.src = base64Str;
       });
     }
 
-    // Convert uploaded File to resized base64 image string
     function resizeFileImage(file, maxWidth = 500, maxHeight = 500) {
       return new Promise((resolve) => {
         const img = new Image();
@@ -141,26 +186,15 @@
             ctx.drawImage(img, 0, 0, width, height);
             resolve(canvas.toDataURL());
           };
-          img.onerror = () => {
-            console.error("Failed to load cleaned image for resizing");
-            resolve(null);
-          };
           img.src = e.target.result;
-        };
-        reader.onerror = () => {
-          console.error("Failed to read cleaned file");
-          resolve(null);
         };
         reader.readAsDataURL(file);
       });
     }
 
-    // Compare images using Resemble.js and return result object
     async function compareImages(base64Uncleaned, cleanedFile) {
       const resizedUncleaned = await resizeBase64Image(base64Uncleaned);
       const resizedCleaned = await resizeFileImage(cleanedFile);
-
-      if (!resizedCleaned) throw new Error("Failed to process cleaned image for comparison.");
 
       return new Promise((resolve) => {
         resemble(resizedUncleaned)
@@ -172,29 +206,17 @@
       });
     }
 
-    // Update user points in Firestore
     async function updateUserPoints(points) {
       const userId = sessionStorage.getItem("user_id");
-      if (!userId) {
-        console.error("No logged-in user.");
-        return;
-      }
-      try {
-        const userRef = doc(db, "users", userId);
-        const userSnap = await getDoc(userRef);
-        if (userSnap.exists()) {
-          const currentPoints = userSnap.data().points || 0;
-          await updateDoc(userRef, { points: currentPoints + points });
-          console.log(`Updated points for ${userId}: ${currentPoints + points}`);
-        } else {
-          console.error("User not found in Firestore.");
-        }
-      } catch (e) {
-        console.error("Error updating user points:", e);
+      if (!userId) return;
+      const userRef = doc(db, "users", userId);
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const currentPoints = userSnap.data().points || 0;
+        await updateDoc(userRef, { points: currentPoints + points });
       }
     }
 
-    // On page load
     document.addEventListener("DOMContentLoaded", async () => {
       const urlParams = new URLSearchParams(window.location.search);
       const locationParam = urlParams.get("location");
@@ -203,89 +225,69 @@
         document.getElementById("errorMessage").style.display = "block";
         return;
       }
-      document.getElementById("location").value = decodeURIComponent(locationParam);
+
+      const decodedLocation = decodeURIComponent(locationParam);
+      window.locationToShow = decodedLocation;  // Set global var for map init
+
+      const locationInput = document.getElementById("location");
+      locationInput.value = decodedLocation;
 
       // Fetch uncleaned image data
-      const uncleanedData = await fetchUncleanedImage(locationParam);
+      const uncleanedData = await fetchUncleanedImage(decodedLocation);
       if (!uncleanedData) {
         document.getElementById("errorMessage").textContent = "Uncleaned image not found for this location.";
         document.getElementById("errorMessage").style.display = "block";
         return;
       }
       uncleanedImageBase64 = await getBase64FromUrl(uncleanedData.url);
-      if (!uncleanedImageBase64) {
-        document.getElementById("errorMessage").textContent = "Failed to load uncleaned image for verification.";
-        document.getElementById("errorMessage").style.display = "block";
-        return;
-      }
-      console.log("Uncleaned image loaded for comparison");
     });
 
-    // Form submit handler for verification only (no saving cleaned image)
     document.getElementById("uploadForm").onsubmit = async function (event) {
       event.preventDefault();
 
       const cleanedFile = document.getElementById("imageUpload").files[0];
-      const location = document.getElementById("location").value;
-      const errorMessageElement = document.getElementById("errorMessage");
-      const successMessageElement = document.getElementById("successMessage");
+      const errorMessage = document.getElementById("errorMessage");
+      const successMessage = document.getElementById("successMessage");
 
-      errorMessageElement.style.display = "none";
-      successMessageElement.style.display = "none";
+      errorMessage.style.display = "none";
+      successMessage.style.display = "none";
 
-      if (!cleanedFile) {
-        errorMessageElement.textContent = "Please select a cleaned image to upload.";
-        errorMessageElement.style.display = "block";
-        return;
-      }
-      if (!location) {
-        errorMessageElement.textContent = "Location is missing.";
-        errorMessageElement.style.display = "block";
-        return;
-      }
-      if (!uncleanedImageBase64) {
-        errorMessageElement.textContent = "Uncleaned image data missing. Cannot verify.";
-        errorMessageElement.style.display = "block";
+      if (!cleanedFile || !uncleanedImageBase64) {
+        errorMessage.textContent = "Missing cleaned or uncleaned image.";
+        errorMessage.style.display = "block";
         return;
       }
 
       try {
         const result = await compareImages(uncleanedImageBase64, cleanedFile);
         const mismatch = parseFloat(result.misMatchPercentage);
-        console.log("Mismatch percentage:", mismatch);
 
-        // Threshold for considering cleaned — tweak as needed
         if (mismatch < 25) {
-          errorMessageElement.textContent = "The cleaned image does not differ enough. Area might not be cleaned.";
-          errorMessageElement.style.display = "block";
+          errorMessage.textContent = "The cleaned image does not differ enough. Area might not be cleaned.";
+          errorMessage.style.display = "block";
         } else {
-          // Mark completed true in Firestore
           if (matchedDocId) {
             const imageDocRef = doc(db, "images", matchedDocId);
             await updateDoc(imageDocRef, { completed: true });
           }
-
-          await updateUserPoints(10); // add 10 points
-
-          successMessageElement.textContent = `Image verified successfully! +10 points awarded. Difference: ${mismatch.toFixed(2)}%`;
-          successMessageElement.style.display = "block";
+          await updateUserPoints(10);
+          successMessage.textContent = `Image verified successfully! +10 points awarded. Difference: ${mismatch.toFixed(2)}%`;
+          successMessage.style.display = "block";
 
           setTimeout(() => {
             window.location.href = "play.html";
           }, 2500);
         }
-      } catch (error) {
-        errorMessageElement.textContent = "Error comparing images: " + error;
-        errorMessageElement.style.display = "block";
+      } catch (err) {
+        errorMessage.textContent = "Error comparing images: " + err;
+        errorMessage.style.display = "block";
       }
     };
   </script>
 </head>
 <body id="upload-cleaned">
   <header>
-    <div class="logo">
-      <h1>Trash To Treasure</h1>
-    </div>
+    <div class="logo"><h1>Trash To Treasure</h1></div>
     <nav>
       <ul class="nav-links">
         <li><a href="home.html">Home</a></li>
@@ -305,18 +307,11 @@
       <form id="uploadForm">
         <div class="form-group">
           <label for="imageUpload">Choose Cleaned Image</label>
-          <input type="file" id="imageUpload" name="image" accept="image/*" required />
+          <input type="file" id="imageUpload" accept="image/*" required />
         </div>
         <div class="form-group">
           <label for="location">Location</label>
-          <input
-            type="text"
-            id="location"
-            name="location"
-            placeholder="Location will be set automatically"
-            readonly
-            required
-          />
+          <input type="text" id="location" readonly required />
         </div>
         <button type="submit" class="submit-btn">Verify</button>
       </form>
