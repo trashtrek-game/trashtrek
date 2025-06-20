@@ -28,13 +28,44 @@
       margin-top: 10px;
     }
   </style>
+</head>
+<body id="upload">
+  <header>
+    <div class="logo">
+      <h1>TrashTrek</h1>
+    </div>
+  </header>
 
-  <!-- Firebase SDK -->
+  <main>
+    <section class="upload-form">
+      <h2>Upload New Image</h2>
+      <form id="uploadForm">
+        <div class="form-group">
+          <label for="imageUpload">Choose Image</label>
+          <input type="file" id="imageUpload" name="image" accept="image/*" required>
+        </div>
+        <div class="form-group">
+          <label for="location">Location</label>
+          <input type="text" id="location" name="location" placeholder="Click on the map to set location" required readonly>
+          <button type="button" id="locateMe">Use My Current Location</button>
+        </div>
+        <div id="map"></div>
+        <div id="error" class="error"></div>
+        <button type="submit" class="submit-btn">Upload</button>
+      </form>
+      <div class="image-preview" id="imagePreview"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2025 TrashTrek. All Rights Reserved.</p>
+  </footer>
+
+  <!-- Firebase and Script -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.5.0/firebase-app.js";
     import { getFirestore, collection, addDoc } from "https://www.gstatic.com/firebasejs/11.5.0/firebase-firestore.js";
 
-    // Firebase Config
     const firebaseConfig = {
       apiKey: "AIzaSyDa-g9F78fLXcQhvuHCQcdjMCpp7Bscr5w",
       authDomain: "trashtrek-db48c.firebaseapp.com",
@@ -44,13 +75,13 @@
       appId: "1:806265755170:web:fdce723b3ef706f242dc7b"
     };
 
-    // Init Firebase
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
     let map, marker;
 
-    window.initMap = function () {
+    // Export initMap globally
+    window.initMap = () => {
       if (navigator.geolocation) {
         navigator.geolocation.getCurrentPosition(
           (position) => {
@@ -91,103 +122,73 @@
       document.getElementById('location').value = `${latLng.lat().toFixed(4)},${latLng.lng().toFixed(4)}`;
     }
 
-    document.getElementById('locateMe').addEventListener('click', () => {
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            const pos = {
-              lat: position.coords.latitude,
-              lng: position.coords.longitude
-            };
-            marker.setPosition(pos);
-            map.setCenter(pos);
-            updateLocation();
-          },
-          (error) => {
-            showError("Unable to retrieve location. Please allow location access.");
-          }
-        );
-      } else {
-        showError("Geolocation is not supported by this browser.");
-      }
-    });
-
-    document.getElementById('uploadForm').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const imageFile = document.getElementById('imageUpload').files[0];
-      const location = document.getElementById('location').value;
-
-      if (!imageFile || !location) {
-        showError("Please upload an image and select a location.");
-        return;
-      }
-
-      const formData = new FormData();
-      formData.append('file', imageFile);
-      formData.append('upload_preset', 'gktk123');
-
-      try {
-        const res = await fetch('https://api.cloudinary.com/v1_1/djhqevdgz/image/upload', {
-          method: 'POST',
-          body: formData
-        });
-        const data = await res.json();
-        const imageUrl = data.secure_url;
-
-        await addDoc(collection(db, "images"), {
-          url: imageUrl,
-          location: location,
-          timestamp: new Date().toISOString(),
-          completed: false
-        });
-
-        document.getElementById('imagePreview').innerHTML = `<img src="${imageUrl}" alt="Uploaded Image">`;
-        window.location.href = 'play.html';
-      } catch (err) {
-        showError("Upload failed. " + err.message);
-      }
-    });
-
     function showError(msg) {
       const errDiv = document.getElementById('error');
       errDiv.textContent = msg;
       setTimeout(() => errDiv.textContent = '', 5000);
     }
+
+    window.addEventListener('DOMContentLoaded', () => {
+      // Locate Me button
+      document.getElementById('locateMe').addEventListener('click', () => {
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const pos = {
+                lat: position.coords.latitude,
+                lng: position.coords.longitude
+              };
+              marker.setPosition(pos);
+              map.setCenter(pos);
+              updateLocation();
+            },
+            () => showError("Unable to access your location.")
+          );
+        } else {
+          showError("Geolocation is not supported.");
+        }
+      });
+
+      // Upload handler
+      document.getElementById('uploadForm').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const imageFile = document.getElementById('imageUpload').files[0];
+        const location = document.getElementById('location').value;
+
+        if (!imageFile || !location) {
+          showError("Please upload an image and select a location.");
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', imageFile);
+        formData.append('upload_preset', 'gktk123'); // your Cloudinary unsigned preset
+
+        try {
+          const res = await fetch('https://api.cloudinary.com/v1_1/djhqevdgz/image/upload', {
+            method: 'POST',
+            body: formData
+          });
+          const data = await res.json();
+          const imageUrl = data.secure_url;
+
+          await addDoc(collection(db, "images"), {
+            url: imageUrl,
+            location: location,
+            timestamp: new Date().toISOString(),
+            completed: false
+          });
+
+          document.getElementById('imagePreview').innerHTML = `<img src="${imageUrl}" alt="Uploaded Image">`;
+          window.location.href = 'play.html';
+        } catch (err) {
+          showError("Upload failed: " + err.message);
+        }
+      });
+    });
   </script>
-</head>
-<body id="upload">
-  <header>
-    <div class="logo">
-      <h1>TrashTrek</h1>
-    </div>
-  </header>
 
-  <main>
-    <section class="upload-form">
-      <h2>Upload New Image</h2>
-      <form id="uploadForm">
-        <div class="form-group">
-          <label for="imageUpload">Choose Image</label>
-          <input type="file" id="imageUpload" name="image" accept="image/*" required>
-        </div>
-        <div class="form-group">
-          <label for="location">Location</label>
-          <input type="text" id="location" name="location" placeholder="Click on the map to set location" required readonly>
-          <button type="button" id="locateMe">Use My Current Location</button>
-        </div>
-        <div id="map"></div>
-        <div id="error" class="error"></div>
-        <button type="submit" class="submit-btn">Upload</button>
-      </form>
-      <div class="image-preview" id="imagePreview"></div>
-    </section>
-  </main>
-
-  <footer>
-    <p>&copy; 2025 TrashTrek. All Rights Reserved.</p>
-  </footer>
-
-  <!-- Google Maps JS API -->
+  <!-- Google Maps API -->
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBsyjMTGjMj-meiFqRc76awykOqWe2zXaE&callback=initMap" async defer></script>
 </body>
 </html>
